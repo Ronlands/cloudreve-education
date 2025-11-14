@@ -45,6 +45,11 @@ func migrate(l logging.Logger, client *ent.Client, ctx context.Context, kv cache
 		return fmt.Errorf("failed migrating default storage policy: %w", err)
 	}
 
+	// 创建公共文件夹（由管理员拥有，所有用户都可以访问）
+	if err := migratePublicFolder(l, client, ctx); err != nil {
+		return fmt.Errorf("failed creating public folder: %w", err)
+	}
+
 	if err := applyPatches(l, client, ctx, requiredDbVersion); err != nil {
 		return fmt.Errorf("failed applying schema patches: %w", err)
 	}
@@ -179,7 +184,7 @@ func migrateUserGroup(l logging.Logger, client *ent.Client, ctx context.Context)
 	l.Info("Insert default user group...")
 	permissions := &boolset.BooleanSet{}
 	boolset.Sets(map[types.GroupPermission]bool{
-		types.GroupPermissionShare:            true,
+		// 普通用户只能下载分享链接，不能上传、不能分享、不能使用其他功能
 		types.GroupPermissionShareDownload:    true,
 		types.GroupPermissionRedirectedSource: true,
 	}, permissions)
@@ -225,6 +230,57 @@ func migrateAnonymousGroup(l logging.Logger, client *ent.Client, ctx context.Con
 		return fmt.Errorf("failed to create default anonymous group: %w", err)
 	}
 
+	return nil
+}
+
+// migratePublicFolder 创建公共文件夹（由管理员ID=1拥有，所有用户都可以访问）
+func migratePublicFolder(l logging.Logger, client *ent.Client, ctx context.Context) error {
+	// 检查管理员用户是否存在（ID=1）
+	adminUser, err := client.User.Get(ctx, 1)
+	if err != nil {
+		// 如果管理员不存在，跳过创建公共文件夹（可能在首次安装时）
+		l.Info("Admin user (ID=1) not found, skip creating public folder. It will be created when admin user is available.")
+		return nil
+	}
+
+	// 检查公共文件夹是否已存在
+	fileClient := NewFileClient(client)
+	adminRoot, err := fileClient.Root(ctx, adminUser)
+	if err != nil {
+		// 如果管理员根文件夹不存在，跳过
+		l.Info("Admin root folder not found, skip creating public folder.")
+		return nil
+	}
+
+	// 检查公共文件夹是否已存在
+	existingPublicFolder, err := client.File.Query().
+		Where(
+			file.ParentID(adminRoot.ID),
+			file.NameEQ(PublicFolderName),
+		).
+		First(ctx)
+	
+	if err == nil && existingPublicFolder != nil {
+		l.Info("Public folder already exists, skip creating.")
+		return nil
+	}
+
+	// 创建公共文件夹
+	l.Info("Creating public folder...")
+	_, err = fileClient.CreateFolder(ctx, adminRoot, &CreateFolderParameters{
+		Owner: adminUser.ID,
+		Name:  PublicFolderName,
+	})
+	if err != nil {
+		// 如果文件夹已存在（并发创建），忽略错误
+		if strings.Contains(err.Error(), "UNIQUE constraint") {
+			l.Info("Public folder already exists (created concurrently), skip creating.")
+			return nil
+		}
+		return fmt.Errorf("failed to create public folder: %w", err)
+	}
+
+	l.Info("Public folder created successfully.")
 	return nil
 }
 
