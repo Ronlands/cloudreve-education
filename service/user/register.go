@@ -1,20 +1,17 @@
 package user
 
 import (
-	"context"
 	"errors"
-	"strings"
-	"time"
 
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
 	"github.com/cloudreve/Cloudreve/v4/ent"
 	"github.com/cloudreve/Cloudreve/v4/ent/user"
 	"github.com/cloudreve/Cloudreve/v4/inventory"
-	"github.com/cloudreve/Cloudreve/v4/pkg/auth"
-	"github.com/cloudreve/Cloudreve/v4/pkg/cluster/routes"
-	"github.com/cloudreve/Cloudreve/v4/pkg/email"
 	"github.com/cloudreve/Cloudreve/v4/pkg/hashid"
+	"github.com/cloudreve/Cloudreve/v4/pkg/logging"
 	"github.com/cloudreve/Cloudreve/v4/pkg/serializer"
+	"github.com/cloudreve/Cloudreve/v4/pkg/setting"
+	"github.com/cloudreve/Cloudreve/v4/pkg/sms"
 	"github.com/cloudreve/Cloudreve/v4/pkg/util"
 	"github.com/gin-gonic/gin"
 )
@@ -22,28 +19,72 @@ import (
 // RegisterParameterCtx define key fore UserRegisterService
 type RegisterParameterCtx struct{}
 
-// UserRegisterService 管理用户注册的服务
+// UserRegisterService 管理用户注册的服务（仅支持手机号注册）
 type UserRegisterService struct {
-	UserName string `form:"email" json:"email" binding:"required,email"`
-	Password string `form:"password" json:"password" binding:"required,min=6,max=128"`
-	Language string `form:"language" json:"language"`
+	// 手机号注册
+	Phone        string `form:"phone" json:"phone" binding:"required"`                  // 手机号
+	Code         string `form:"code" json:"code" binding:"required"`                  // 验证码
+	Password     string `form:"password" json:"password" binding:"required,min=6,max=128"`          // 密码
+	University   string `form:"university" json:"university" binding:"required"`      // 院校（必填）
+	Major        string `form:"major" json:"major" binding:"required"`                // 专业（必填）
 }
 
-// Register 新用户注册
+// Register 新用户注册（仅支持手机号注册）
 func (service *UserRegisterService) Register(c *gin.Context) serializer.Response {
 	dep := dependency.FromContext(c)
 	settings := dep.SettingProvider()
+	logger := logging.FromContext(c)
 
-	isEmailRequired := settings.EmailActivationEnabled(c)
-	args := &inventory.NewUserArgs{
-		Email:         strings.ToLower(service.UserName),
-		PlainPassword: service.Password,
-		Status:        user.StatusActive,
-		GroupID:       settings.DefaultGroup(c),
-		Language:      service.Language,
+	// 只支持手机号注册
+	if service.Phone == "" {
+		return serializer.ErrWithDetails(c, serializer.CodeParamErr, "请提供手机号", nil)
 	}
-	if isEmailRequired {
-		args.Status = user.StatusInactive
+
+	return service.registerWithPhone(c, dep, settings, logger)
+}
+
+// registerWithPhone 手机号注册
+func (service *UserRegisterService) registerWithPhone(c *gin.Context, dep dependency.Dep, settings setting.Provider, logger logging.Logger) serializer.Response {
+	// 验证必填字段
+	if service.Phone == "" {
+		return serializer.ErrWithDetails(c, serializer.CodeParamErr, "手机号不能为空", nil)
+	}
+	if service.Code == "" {
+		return serializer.ErrWithDetails(c, serializer.CodeParamErr, "验证码不能为空", nil)
+	}
+	if service.Password == "" {
+		return serializer.ErrWithDetails(c, serializer.CodeParamErr, "密码不能为空", nil)
+	}
+	if len(service.Password) < 6 || len(service.Password) > 128 {
+		return serializer.ErrWithDetails(c, serializer.CodeParamErr, "密码长度必须在6-128位之间", nil)
+	}
+	if service.University == "" {
+		return serializer.ErrWithDetails(c, serializer.CodeParamErr, "院校不能为空", nil)
+	}
+	if service.Major == "" {
+		return serializer.ErrWithDetails(c, serializer.CodeParamErr, "专业不能为空", nil)
+	}
+
+	// 规范化并验证手机号格式
+	normalizedPhone := util.NormalizePhone(service.Phone)
+	if !util.ValidatePhone(normalizedPhone) {
+		return serializer.ErrWithDetails(c, serializer.CodeParamErr, "手机号格式不正确", nil)
+	}
+
+	// 验证短信验证码
+	smsProvider := sms.GetSMSProvider(dep, logger)
+	smsService := sms.NewSMSService(dep.KV(), logger, smsProvider)
+	if err := smsService.VerifyCode(c, normalizedPhone, service.Code); err != nil {
+		return serializer.Err(c, err)
+	}
+
+	args := &inventory.NewUserArgs{
+		Phone:         normalizedPhone,
+		PlainPassword: service.Password,
+		Status:        user.StatusActive, // 手机号注册直接激活
+		GroupID:       settings.DefaultGroup(c),
+		University:    service.University,
+		Major:        service.Major,
 	}
 
 	userClient := dep.UserClient()
@@ -59,68 +100,20 @@ func (service *UserRegisterService) Register(c *gin.Context) serializer.Response
 
 	if err != nil {
 		_ = inventory.Rollback(tx)
-		if errors.Is(err, inventory.ErrUserEmailExisted) {
-			return serializer.ErrWithDetails(c, serializer.CodeEmailExisted, "Email already in use", err)
+		if errors.Is(err, inventory.ErrUserPhoneExisted) {
+			return serializer.ErrWithDetails(c, serializer.CodeEmailExisted, "手机号已被注册", err)
 		}
-
-		if errors.Is(err, inventory.ErrInactiveUserExisted) {
-			if err := sendActivationEmail(c, dep, expectedUser); err != nil {
-				return serializer.ErrWithDetails(c, serializer.CodeNotSet, "", err)
-			}
-
-			return serializer.ErrWithDetails(c, serializer.CodeEmailSent, "User is not activated, activation email has been resent", nil)
-		}
-
-		return serializer.DBErr(c, "Failed to insert user row", err)
+		return serializer.DBErr(c, "注册失败", err)
 	}
 
 	if err := inventory.Commit(tx); err != nil {
 		return serializer.DBErr(c, "Failed to commit user row", err)
 	}
 
-	if isEmailRequired {
-		if err := sendActivationEmail(c, dep, expectedUser); err != nil {
-			return serializer.ErrWithDetails(c, serializer.CodeNotSet, "", err)
-		}
-		return serializer.Response{Code: serializer.CodeNotFullySuccess}
-	}
-
 	return serializer.Response{Data: BuildUser(expectedUser, dep.HashIDEncoder())}
 }
 
-func sendActivationEmail(ctx context.Context, dep dependency.Dep, newUser *ent.User) error {
-	base := dep.SettingProvider().SiteURL(ctx)
-	userID := hashid.EncodeUserID(dep.HashIDEncoder(), newUser.ID)
-	ttl := time.Now().Add(time.Duration(24) * time.Hour)
-	activateURL, err := auth.SignURI(ctx, dep.GeneralAuth(), routes.MasterUserActivateAPIUrl(base, userID).String(), &ttl)
-	if err != nil {
-		return serializer.NewError(serializer.CodeEncryptError, "Failed to sign the activation link", err)
-	}
-
-	// 取得签名
-	credential := activateURL.Query().Get("sign")
-
-	// 生成对用户访问的激活地址
-	finalURL := routes.MasterUserActivateUrl(base)
-	queries := finalURL.Query()
-	queries.Add("id", userID)
-	queries.Add("sign", credential)
-	finalURL.RawQuery = queries.Encode()
-
-	// 返送激活邮件
-	title, body, err := email.NewActivationEmail(ctx, dep.SettingProvider(), newUser, finalURL.String())
-	if err != nil {
-		return serializer.NewError(serializer.CodeFailedSendEmail, "Failed to send activation email", err)
-	}
-
-	if err := dep.EmailClient(ctx).Send(ctx, newUser.Email, title, body); err != nil {
-		return serializer.NewError(serializer.CodeFailedSendEmail, "Failed to send activation email", err)
-	}
-
-	return nil
-}
-
-// ActivateUser 激活用户
+// ActivateUser 激活用户（保留用于其他场景，如管理员激活）
 func ActivateUser(c *gin.Context) serializer.Response {
 	uid := hashid.FromContext(c)
 	dep := dependency.FromContext(c)

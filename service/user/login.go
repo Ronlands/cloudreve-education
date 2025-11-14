@@ -3,6 +3,7 @@ package user
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/cloudreve/Cloudreve/v4/application/dependency"
 	"github.com/cloudreve/Cloudreve/v4/ent"
@@ -22,9 +23,9 @@ import (
 // LoginParameterCtx define key fore UserLoginService
 type LoginParameterCtx struct{}
 
-// UserLoginService 管理用户登录的服务
+// UserLoginService 管理用户登录的服务（支持邮箱和手机号登录）
 type UserLoginService struct {
-	UserName string `form:"email" json:"email" binding:"required,email"`
+	UserName string `form:"email" json:"email"` // 可以是邮箱或手机号
 	Password string `form:"password" json:"password" binding:"required,min=4,max=128"`
 }
 
@@ -126,13 +127,23 @@ func (service *UserLoginService) Login(c *gin.Context) (*ent.User, string, error
 	userClient := dep.UserClient()
 
 	ctx := context.WithValue(c, inventory.LoadUserGroup{}, true)
-	expectedUser, err := userClient.GetByEmail(ctx, service.UserName)
+	
+	// 判断是手机号还是邮箱
+	var expectedUser *ent.User
+	var err error
+	
+	// 简单判断：如果包含@则是邮箱，否则是手机号
+	if strings.Contains(service.UserName, "@") {
+		expectedUser, err = userClient.GetByEmail(ctx, service.UserName)
+	} else {
+		expectedUser, err = userClient.GetByPhone(ctx, service.UserName)
+	}
 
 	// 一系列校验
 	if err != nil {
-		err = serializer.NewError(serializer.CodeInvalidPassword, "Incorrect password or email address", err)
+		err = serializer.NewError(serializer.CodeInvalidPassword, "用户名或密码错误", err)
 	} else if checkErr := inventory.CheckPassword(expectedUser, service.Password); checkErr != nil {
-		err = serializer.NewError(serializer.CodeInvalidPassword, "Incorrect password or email address", err)
+		err = serializer.NewError(serializer.CodeInvalidPassword, "用户名或密码错误", err)
 	} else if expectedUser.Status == user.StatusManualBanned || expectedUser.Status == user.StatusSysBanned {
 		err = serializer.NewError(serializer.CodeUserBaned, "This account has been blocked", nil)
 	} else if expectedUser.Status == user.StatusInactive {

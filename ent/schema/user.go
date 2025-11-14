@@ -16,12 +16,23 @@ func (User) Fields() []ent.Field {
 	return []ent.Field{
 		field.String("email").
 			MaxLen(100).
-			Unique(),
+			Unique().
+			Optional(),
+		field.String("phone").
+			MaxLen(20).
+			Unique().
+			Optional(),
 		field.String("nick").
 			MaxLen(100),
 		field.String("password").
 			Optional().
 			Sensitive(),
+		field.String("university").
+			MaxLen(200).
+			Optional(),
+		field.String("major").
+			MaxLen(200).
+			Optional(),
 		field.Enum("status").
 			Values("active", "inactive", "manual_banned", "sys_banned").
 			Default("active"),

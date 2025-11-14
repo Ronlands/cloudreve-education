@@ -12,19 +12,23 @@ import (
 func ParamErrorMsg(filed string, tag string) string {
 	// 未通过验证的表单域与中文对应
 	fieldMap := map[string]string{
-		"UserName": "Email",
-		"Password": "Password",
-		"Path":     "Path",
-		"SourceID": "Source resource",
-		"URL":      "URL",
-		"Nick":     "Nickname",
+		"UserName":   "Email",
+		"Password":   "Password",
+		"Path":       "Path",
+		"SourceID":   "Source resource",
+		"URL":        "URL",
+		"Nick":       "Nickname",
+		"Phone":      "手机号",
+		"Code":       "验证码",
+		"University": "院校",
+		"Major":      "专业",
 	}
 	// 未通过的规则与中文对应
 	tagMap := map[string]string{
-		"required": "cannot be empty",
-		"min":      "too short",
-		"max":      "too long",
-		"email":    "format error",
+		"required": "不能为空",
+		"min":      "长度不足",
+		"max":      "长度过长",
+		"email":    "格式错误",
 	}
 	fieldVal, findField := fieldMap[filed]
 	if !findField {

@@ -283,13 +283,19 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 			token := session.Group("token")
 			// Token based authentication
 			{
-				// 用户登录
+				// 用户登录（邮箱/手机号+密码）
 				token.POST("",
 					middleware.CaptchaRequired(func(c *gin.Context) bool {
 						return dep.SettingProvider().LoginCaptchaEnabled(c)
 					}),
 					controllers.FromJSON[usersvc.UserLoginService](usersvc.LoginParameterCtx{}),
 					controllers.UserLoginValidation,
+					controllers.UserIssueToken,
+				)
+				// 手机号+验证码登录（无需密码）
+				token.POST("sms",
+					controllers.FromJSON[usersvc.SMSLoginService](usersvc.SMSLoginParameterCtx{}),
+					controllers.UserSMSLoginValidation,
 					controllers.UserIssueToken,
 				)
 				// 2-factor authentication
@@ -338,6 +344,11 @@ func initMasterRouter(dep dependency.Dep) *gin.Engine {
 		// 用户相关路由
 		user := v4.Group("user")
 		{
+			// 发送短信验证码
+			user.POST("sms/send",
+				controllers.FromJSON[usersvc.SendSMSCodeService](usersvc.SendSMSCodeParameterCtx{}),
+				controllers.SendSMSCode,
+			)
 			// 用户注册 Done
 			user.POST("",
 				middleware.IsFunctionEnabled(func(c *gin.Context) bool {

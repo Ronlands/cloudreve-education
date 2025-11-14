@@ -37,6 +37,7 @@ type (
 
 var (
 	ErrUserEmailExisted      = errors.New("user email has been registered")
+	ErrUserPhoneExisted      = errors.New("user phone has been registered")
 	ErrInactiveUserExisted   = errors.New("email already registered but not activated")
 	ErrorUnknownPasswordType = errors.New("unknown password type")
 	ErrorIncorrectPassword   = errors.New("incorrect password")
@@ -50,6 +51,8 @@ type (
 		Create(ctx context.Context, args *NewUserArgs) (*ent.User, error)
 		// GetByEmail get the user with given email, user status is ignored.
 		GetByEmail(ctx context.Context, email string) (*ent.User, error)
+		// GetByPhone get the user with given phone, user status is ignored.
+		GetByPhone(ctx context.Context, phone string) (*ent.User, error)
 		// GetByID get user by its ID, user status is ignored.
 		GetByID(ctx context.Context, id int) (*ent.User, error)
 		// GetActiveByID get user by its ID, only active user will be returned.
@@ -120,12 +123,15 @@ type (
 	// NewUserArgs args to create a new user
 	NewUserArgs struct {
 		Email         string
+		Phone         string // Optional
 		Nick          string // Optional
 		PlainPassword string
 		Status        user.Status
 		GroupID       int
 		Avatar        string // Optional
 		Language      string // Optional
+		University   string // Optional
+		Major        string // Optional
 	}
 	CreateStoragePackArgs struct {
 		UserID   int
@@ -291,26 +297,55 @@ func (c *userClient) SetStatus(ctx context.Context, u *ent.User, status user.Sta
 }
 
 func (c *userClient) Create(ctx context.Context, args *NewUserArgs) (*ent.User, error) {
-	// Try to check if there's user with same email.
-	if existedUser, err := c.GetByEmail(ctx, args.Email); err == nil {
-		if existedUser.Status == user.StatusInactive {
-			return existedUser, ErrInactiveUserExisted
+	// Try to check if there's user with same email or phone.
+	if args.Email != "" {
+		if existedUser, err := c.GetByEmail(ctx, args.Email); err == nil {
+			if existedUser.Status == user.StatusInactive {
+				return existedUser, ErrInactiveUserExisted
+			}
+			return existedUser, ErrUserEmailExisted
 		}
-		return existedUser, ErrUserEmailExisted
+	}
+	
+	if args.Phone != "" {
+		if existedUser, err := c.GetByPhone(ctx, args.Phone); err == nil {
+			if existedUser.Status == user.StatusInactive {
+				return existedUser, ErrInactiveUserExisted
+			}
+			return existedUser, ErrUserPhoneExisted
+		}
 	}
 
 	nick := args.Nick
 	if nick == "" {
-		nick = strings.Split(args.Email, "@")[0]
+		if args.Phone != "" {
+			nick = args.Phone
+		} else if args.Email != "" {
+			nick = strings.Split(args.Email, "@")[0]
+		} else {
+			nick = "user"
+		}
 	}
 
 	userSetting := &types.UserSetting{VersionRetention: true, VersionRetentionMax: 10}
 	query := c.client.User.Create().
-		SetEmail(args.Email).
 		SetNick(nick).
 		SetStatus(args.Status).
 		SetGroupID(args.GroupID).
 		SetAvatar(args.Avatar)
+
+	if args.Email != "" {
+		query.SetEmail(args.Email)
+	}
+	if args.Phone != "" {
+		query.SetPhone(args.Phone)
+	}
+	if args.University != "" {
+		query.SetUniversity(args.University)
+	}
+	if args.Major != "" {
+		query.SetMajor(args.Major)
+	}
 
 	if args.PlainPassword != "" {
 		pwdDigest, err := digestPassword(args.PlainPassword)
@@ -343,6 +378,10 @@ func (c *userClient) Create(ctx context.Context, args *NewUserArgs) (*ent.User, 
 
 func (c *userClient) GetByEmail(ctx context.Context, email string) (*ent.User, error) {
 	return withUserEagerLoading(ctx, c.client.User.Query().Where(user.EmailEqualFold(email))).First(ctx)
+}
+
+func (c *userClient) GetByPhone(ctx context.Context, phone string) (*ent.User, error) {
+	return withUserEagerLoading(ctx, c.client.User.Query().Where(user.PhoneEQ(phone))).First(ctx)
 }
 
 func (c *userClient) GetByID(ctx context.Context, id int) (*ent.User, error) {

@@ -142,6 +142,26 @@ func UserRegister(c *gin.Context) {
 	c.JSON(200, service.Register(c))
 }
 
+// SendSMSCode 发送短信验证码
+func SendSMSCode(c *gin.Context) {
+	service := ParametersFromContext[*user.SendSMSCodeService](c, user.SendSMSCodeParameterCtx{})
+	c.JSON(200, service.SendCode(c))
+}
+
+// UserSMSLoginValidation 手机号+验证码登录验证
+func UserSMSLoginValidation(c *gin.Context) {
+	service := ParametersFromContext[*user.SMSLoginService](c, user.SMSLoginParameterCtx{})
+	expectedUser, err := service.Login(c)
+	if err != nil {
+		c.JSON(200, serializer.Err(c, err))
+		c.Abort()
+		return
+	}
+
+	util.WithValue(c, inventory.UserCtx{}, expectedUser)
+	c.Next()
+}
+
 // UserSendReset 发送密码重设邮件
 func UserSendReset(c *gin.Context) {
 	service := ParametersFromContext[*user.UserResetEmailService](c, user.UserResetEmailParameterCtx{})
