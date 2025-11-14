@@ -167,6 +167,22 @@ func (service *ListFileService) List(c *gin.Context) (*ListResponse, error) {
 	m := manager.NewFileManager(dep, user)
 	defer m.Recycle()
 
+	// 如果是普通用户（非管理员），强制重定向到公共文件夹
+	isAdmin := user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionIsAdmin))
+	if !isAdmin {
+		// 获取管理员用户（ID=1）的公共文件夹
+		adminUser, err := dep.UserClient().GetByID(c, 1)
+		if err == nil {
+			adminRoot, err := dep.FileClient().Root(c, adminUser)
+			if err == nil {
+				// 构建公共文件夹的URI
+				hasher := dep.HashIDEncoder()
+				publicFolderURI := fmt.Sprintf("my://%s/%s", hashid.EncodeUserID(hasher, adminUser.ID), inventory.PublicFolderName)
+				service.Uri = publicFolderURI
+			}
+		}
+	}
+
 	uri, err := fs.NewUriFromString(service.Uri)
 	if err != nil {
 		return nil, serializer.NewError(serializer.CodeParamErr, "unknown uri", err)
