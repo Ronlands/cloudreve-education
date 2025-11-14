@@ -190,13 +190,33 @@ func (b *baseNavigator) walkNext(ctx context.Context, root *File, next string, i
 		root.mu.Unlock()
 	}
 
-	child, err := b.fileClient.GetChildFile(ctx, model, b.user.ID, next, isLeaf)
+	// 检查是否是访问公共文件夹
+	isAdmin := b.user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionIsAdmin))
+	ownerID := b.user.ID
+	if !isAdmin && model != nil && model.OwnerID == 1 && next == inventory.PublicFolderName {
+		// 普通用户访问公共文件夹，使用管理员ID作为ownerID
+		ownerID = 1
+	}
+	
+	child, err := b.fileClient.GetChildFile(ctx, model, ownerID, next, isLeaf)
 	if err != nil {
 		if ent.IsNotFound(err) {
 			return nil, fs.ErrPathNotExist.WithError(err)
 		}
 
 		return nil, fmt.Errorf("faield to get child %q: %w", next, err)
+	}
+	
+	// 如果是普通用户访问非公共文件夹，检查权限
+	if !isAdmin && child.OwnerID != b.user.ID {
+		// 检查是否是公共文件夹或其子文件夹
+		if child.OwnerID == 1 && child.Name == inventory.PublicFolderName {
+			// 允许访问公共文件夹
+		} else if model != nil && model.OwnerID == 1 && model.Name == inventory.PublicFolderName {
+			// 允许访问公共文件夹的子文件
+		} else {
+			return nil, fs.ErrPathNotExist.WithError(fmt.Errorf("permission denied"))
+		}
 	}
 
 	return newFile(root, child), nil
@@ -249,10 +269,18 @@ func (b *baseNavigator) children(ctx context.Context, parent *File, args *ListAr
 		return b.search(ctx, parent, args)
 	}
 
+	// 检查是否是访问公共文件夹
+	isAdmin := b.user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionIsAdmin))
+	ownerID := b.user.ID
+	if !isAdmin && model != nil && model.OwnerID == 1 && model.Name == inventory.PublicFolderName {
+		// 普通用户访问公共文件夹，使用管理员ID作为ownerID
+		ownerID = 1
+	}
+	
 	children, err := b.fileClient.GetChildFiles(ctx, &inventory.ListFileParameters{
 		PaginationArgs: args.Page,
 		SharedWithMe:   args.SharedWithMe,
-	}, b.user.ID, model)
+	}, ownerID, model)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get children: %w", err)
 	}
