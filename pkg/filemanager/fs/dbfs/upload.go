@@ -32,9 +32,17 @@ func (f *DBFS) PreValidateUpload(ctx context.Context, dst *fs.URI, files ...fs.P
 		return fmt.Errorf("destination is not a folder")
 	}
 
-	// check ownership
-	if f.user.ID != dstFile.OwnerID() {
-		return fmt.Errorf("failed to evaluate permission: %w", err)
+	// check ownership and upload permission
+	// 只有管理员可以上传，普通用户不能上传
+	isAdmin := f.user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionIsAdmin))
+	if !isAdmin {
+		return serializer.NewError(serializer.CodeNoPermissionErr, "您没有上传权限，只有管理员可以上传文件", nil)
+	}
+	
+	// 管理员可以上传到自己的文件夹或公共文件夹（管理员ID=1的公共文件夹）
+	// 如果上传到其他用户的文件夹，需要检查权限
+	if f.user.ID != dstFile.OwnerID() && dstFile.OwnerID() != 1 {
+		return serializer.NewError(serializer.CodeNoPermissionErr, "您只能上传到自己的文件夹或公共文件夹", nil)
 	}
 
 	total := int64(0)
@@ -102,8 +110,12 @@ func (f *DBFS) PrepareUpload(ctx context.Context, req *fs.UploadRequest, opts ..
 		return nil, fs.ErrPathNotExist
 	}
 
-	if _, ok := ctx.Value(ByPassOwnerCheckCtxKey{}).(bool); !ok && ancestor.OwnerID() != f.user.ID {
-		return nil, fs.ErrOwnerOnly
+	// 检查上传权限：只有管理员可以上传，或者上传到自己的文件夹
+	isAdmin := f.user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionIsAdmin))
+	if _, ok := ctx.Value(ByPassOwnerCheckCtxKey{}).(bool); !ok {
+		if ancestor.OwnerID() != f.user.ID && !isAdmin {
+			return nil, serializer.NewError(serializer.CodeNoPermissionErr, "您没有上传权限，只有管理员可以上传文件", nil)
+		}
 	}
 
 	// Lock target
