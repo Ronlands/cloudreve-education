@@ -24,6 +24,7 @@ import (
 
 const (
 	RootFolderName = ""
+	PublicFolderName = "公共教辅资源" // 公共文件夹名称，所有用户都可以访问
 	SearchWildcard = "*"
 	MaxMetadataLen = 65535
 )
