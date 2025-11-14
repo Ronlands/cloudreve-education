@@ -82,8 +82,16 @@ func (n *myNavigator) To(ctx context.Context, path *fs.URI) (*File, error) {
 		if err != nil {
 			return nil, fs.ErrPathNotExist.WithError(fmt.Errorf("invalid user id"))
 		}
-		if fsUid != n.user.ID {
-			return nil, ErrPermissionDenied
+		// 允许访问自己的文件夹或公共文件夹（管理员拥有）
+		isAdmin := n.user.Edges.Group.Permissions.Enabled(int(types.GroupPermissionIsAdmin))
+		if fsUid != n.user.ID && !isAdmin {
+			// 检查是否是访问公共文件夹（管理员ID=1的公共文件夹）
+			if fsUid == 1 {
+				// 允许访问管理员文件夹，但只能访问公共文件夹
+				// 这个检查会在walkNext中进行
+			} else {
+				return nil, ErrPermissionDenied
+			}
 		}
 
 		ctx = context.WithValue(ctx, inventory.LoadUserGroup{}, true)
